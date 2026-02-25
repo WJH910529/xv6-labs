@@ -74,9 +74,15 @@ runcmd(struct cmd *cmd)
 
   case EXEC:
     ecmd = (struct execcmd*)cmd;
+    char path[128];
     if(ecmd->argv[0] == 0)
       exit(1);
     exec(ecmd->argv[0], ecmd->argv);
+    if(strchr(ecmd->argv[0], '/') == 0){
+      path[0] = '/';
+      strcpy(path + 1, ecmd->argv[0]);
+      exec(path, ecmd->argv);
+    }
     fprintf(2, "exec %s failed\n", ecmd->argv[0]);
     break;
 

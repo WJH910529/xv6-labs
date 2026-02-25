@@ -54,7 +54,7 @@ sys_sleep(void)
   int n;
   uint ticks0;
 
-  argint(0, &n);
+  argint(0, &n); //取出使用者傳入的等待長度 n（以 tick 為單位）。
   acquire(&tickslock);
   ticks0 = ticks;
   while(ticks - ticks0 < n){

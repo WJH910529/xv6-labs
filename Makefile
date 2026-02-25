@@ -181,6 +181,7 @@ UPROGS=\
 	$U/_ln\
 	$U/_ls\
 	$U/_mkdir\
+	$U/_pwd\
 	$U/_rm\
 	$U/_sh\
 	$U/_stressfs\
@@ -188,6 +189,9 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+	$U/_sleep\
+	$U/_pingpong\
+	$U/_primes\
 
 
 
