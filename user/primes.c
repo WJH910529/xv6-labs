@@ -2,6 +2,32 @@
 #include "kernel/stat.h"
 #include "user/user.h"
 
+/*
+Pipeline architecture (xv6 primes):
+
+P0 (main)
+  create initial_pipe
+  fork -> P1
+  parent(P0): write 2..35 -> close write end -> wait -> exit
+  child (P1): sieve(initial_pipe)
+
+Each sieve stage S(k):
+  1) read first int from left pipe as prime p, print "prime p"
+  2) create right_pipe
+  3) fork -> next stage S(k+1)
+     - child:  close right_pipe[1], recurse sieve(right_pipe), exit
+     - parent: close right_pipe[0], filter input:
+               for each num from left pipe:
+                 if (num % p != 0) write to right_pipe[1]
+               close fds, wait child, exit
+
+Dataflow example:
+  initial: 2 3 4 5 6 7 8 9 ...
+  S1(p=2):   3 5 7 9 11 ...
+  S2(p=3):   5 7 11 13 ...
+  S3(p=5):   7 11 13 17 ...
+*/
+
 void sieve(int left_pipe[2]){
     int prime;
 

@@ -8,7 +8,8 @@ main(int argc, char *argv[])
 {
 
   if(argc!=2){
-        printf("the argument number input error");
+      fprintf(2,"usage: sleep [tick ...]\n");
+      exit(1);
   }
   int tick = atoi(argv[1]);
   sleep(tick);
