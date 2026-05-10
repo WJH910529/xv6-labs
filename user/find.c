@@ -3,6 +3,27 @@
 #include "user/user.h"
 #include "kernel/fs.h"
 
+/*
+find(path, target_name) quick review:
+
+1) open(path) + fstat(fd, &st):
+   - fstat is for an already-open fd.
+   - Used to determine what "current path" is (T_DIR/T_FILE/T_DEVICE).
+
+2) If current path is a directory (T_DIR):
+   - read each dirent from fd
+   - build child path into buf: "<path>/<entry>"
+   - stat(buf, &st) to inspect each child entry type
+     (stat is for a path string, not an fd)
+
+3) For each child:
+   - skip "." and ".." to avoid infinite recursion
+   - if child is T_DIR: recurse find(buf, target_name)
+   - if child is T_FILE and name matches: print full path
+
+4) Close fd before return in all paths.
+*/
+
 void
 find(char *path, char *target_name)
 {
