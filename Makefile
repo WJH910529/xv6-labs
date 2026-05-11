@@ -193,7 +193,10 @@ UPROGS=\
 	$U/_pingpong\
 	$U/_primes\
 	$U/_find\
-	$U/_xargs
+	$U/_xargs\
+	$U/_arraydemo\
+	$U/_ptrdemo\
+	$U/_strdemo
 
 
 
