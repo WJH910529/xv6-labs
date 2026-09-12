@@ -66,11 +66,11 @@ find(char *path, char *target_name)
         continue;
       }
 
-      if(strcmp(de.name,".")!=0  && strcmp(de.name,"..")!=0){
+      if(strcmp(p,".")!=0  && strcmp(p,"..")!=0){
         if(st.type == T_DIR) 
             find(buf,target_name);
         else if (st.type == T_FILE)
-            if(strcmp(de.name,target_name)==0)
+            if(strcmp(p,target_name)==0)
                 printf("%s\n", buf); 
       }
     }
