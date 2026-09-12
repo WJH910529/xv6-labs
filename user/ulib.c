@@ -106,6 +106,50 @@ atoi(const char *s)
   return n;
 }
 
+int
+myatoi(const char *s)
+{
+    unsigned long sum = 0;
+    unsigned long limit;
+    int sign = 1;
+
+    while (*s == ' ' || *s == '\t' || *s == '\n' ||
+           *s == '\r' || *s == '\f' || *s == '\v')
+        s++;
+
+    if (*s == '-') {
+        sign = -1;
+        s++;
+    } else if (*s == '+') {
+        s++;
+    }
+
+    limit = (sign == 1) ? 2147483647UL : 2147483648UL;
+
+    while (*s >= '0' && *s <= '9') {
+        unsigned int digit = *s - '0';
+
+        // 檢查 sum * 10 + digit 是否會超過 limit
+        if (sum > (limit - digit) / 10) {
+            if (sign == 1)
+                return 2147483647;
+            else
+                return -2147483647 - 1;
+        }
+
+        sum = sum * 10 + digit;
+        s++;
+    }
+
+    if (sign == -1) {
+        if (sum == 2147483648UL)
+            return -2147483647 - 1;
+        return -(int)sum;
+    }
+
+    return (int)sum;
+}
+
 void*
 memmove(void *vdst, const void *vsrc, int n)
 {
