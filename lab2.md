@@ -2,17 +2,17 @@
 
 課程頁面：[Lab: System calls](https://pdos.csail.mit.edu/6.S081/2022/labs/syscall.html)
 
-這份文件是 Lab 2 的總筆記。目前只完成第一部分 **Using gdb (easy)**；之後實作 `trace` 與 `sysinfo` 時，再分別補進第二、第三部分。
+這份文件是 Lab 2 的總筆記。目前已完成 **Using GDB**、**System call tracing** 與 **Sysinfo** 的實作；整份 lab 尚待補上 `answers-syscall.txt` 與 `time.txt`。
 
 ```text
 Lab 2: System calls
-├── 1. Using GDB (easy)       ← 目前進度
+├── 1. Using GDB (easy)       ← 已完成
 │   ├── 觀察 syscall call stack
 │   ├── 查看 proc、trapframe 與 a7
 │   ├── 判斷 trap 前的 CPU mode
 │   └── 用 GDB 與 kernel.asm 分析 kernel panic
-├── 2. System call tracing    ← 尚未開始
-└── 3. Sysinfo                ← 尚未開始
+├── 2. System call tracing    ← 已完成實作與測試
+└── 3. Sysinfo                ← 已完成實作與測試
 ```
 
 ---
@@ -641,94 +641,586 @@ num = p->trapframe->a7;
 
 ## 3. Sysinfo
 
-課程難度：**moderate**。狀態：**尚未開始，以下為預定筆記架構**。
+課程難度：**moderate**。狀態：**已完成，`sysinfotest` 通過**。
 
 ### 3.1 題目需求與預期行為
 
-#### `sysinfo(struct sysinfo *)` 的功能
+這一部分要新增：
+
+```c
+int sysinfo(struct sysinfo *info);
+```
+
+呼叫者提供一個位於 user space 的 `struct sysinfo` 位址；kernel 蒐集系統資訊後，把結果寫回該結構。成功時回傳 `0`，user pointer 無效或複製失敗時回傳 `-1`。
 
 #### `freemem` 與 `nproc` 的定義
 
+題目指定兩個欄位：
+
+```c
+struct sysinfo {
+  uint64 freemem;   // amount of free memory (bytes)
+  uint64 nproc;     // number of process
+};
+```
+
+- `freemem` 是目前 free physical pages 的總 byte 數，不是 page 數。
+- `nproc` 是 process table 中 `state != UNUSED` 的 slot 數量。
+
+`nproc` 因此會計入 `USED`、`SLEEPING`、`RUNNABLE`、`RUNNING` 與 `ZOMBIE`；只有 `UNUSED` 不計。
+
 #### `sysinfotest` 的通過條件
+
+提供的 `user/sysinfotest.c` 主要驗證：
+
+1. 一般的 `sysinfo(&info)` 能成功。
+2. 無效的 user address 會讓 syscall 回傳 `-1`，kernel 不會直接 crash。
+3. 配置與釋放 page 後，`freemem` 會按照 `PGSIZE` 改變。
+4. `fork()` 建立 child 後 `nproc` 增加一，child 被 `wait()` 回收後恢復。
+
+成功時輸出：
+
+```text
+sysinfotest: start
+sysinfotest: OK
+```
 
 ### 3.2 實作前：理解資料結構與資料流
 
 #### `kernel/sysinfo.h` 的 `struct sysinfo`
 
+`kernel/sysinfo.h` 已由 lab 提供：
+
+```c
+struct sysinfo {
+  uint64 freemem;
+  uint64 nproc;
+};
+```
+
+同一份 layout 會被 user test 與 kernel handler 使用，才能正確解讀複製的 16 bytes。
+
 #### kernel 如何將資料寫回 user space
 
+user program 呼叫：
+
+```c
+struct sysinfo info;
+sysinfo(&info);
+```
+
+`&info` 是 user virtual address。進入 kernel 後，即使這個值以 `uint64` 保存，kernel 也不能把它當成普通 kernel pointer 直接 dereference；必須用目前 process 的 page table 翻譯並檢查該位址。
+
+本題的資料流是：
+
+```text
+user/sysinfotest.c
+  sysinfo(&info)
+        │ a0 = &info，a7 = SYS_sysinfo
+        ▼
+user/usys.S
+  ecall
+        ▼
+kernel/syscall.c
+  syscalls[SYS_sysinfo]()
+        ▼
+kernel/sysproc.c
+  sys_sysinfo()
+        ├── freemem()
+        ├── nproc()
+        └── copyout(current process pagetable, user address, kernel info)
+        ▼
+user 的 info 得到結果
+```
+
 #### 本功能需要修改的檔案
+
+| 檔案 | 用途 |
+|---|---|
+| `Makefile` | 編譯 `_sysinfotest` 並放進 `fs.img` |
+| `user/user.h` | 宣告 user API 與 `struct sysinfo` tag |
+| `user/usys.pl` | 產生執行 `ecall` 的 user stub |
+| `kernel/syscall.h` | 分配 syscall number |
+| `kernel/syscall.c` | 將 number 對應到 `sys_sysinfo()` |
+| `kernel/sysproc.c` | 實作 kernel syscall handler |
+| `kernel/kalloc.c` | 計算 free physical memory |
+| `kernel/proc.c` | 計算使用中的 process slots |
+| `kernel/defs.h` | 宣告 kernel helper functions |
 
 ### 3.3 建立 `sysinfo` 的 system call 介面
 
 #### 3.3.1 將 `_sysinfotest` 加入 `Makefile` 的 `UPROGS`
 
+```make
+$U/_trace\
+$U/_sysinfotest\
+```
+
+`user/sysinfotest.c` 存在於 host filesystem，不代表 xv6 shell 能直接執行它。加入 `UPROGS` 後，Makefile 才會編譯 `user/_sysinfotest`，並由 `mkfs` 把它放進 xv6 的 `fs.img`。
+
+若漏掉這步，xv6 shell 會顯示：
+
+```text
+exec sysinfotest failed
+```
+
 #### 3.3.2 在 `user/user.h` 預先宣告 struct 與函式
+
+```c
+struct sysinfo;
+int sysinfo(struct sysinfo *);
+```
+
+第一行是 forward declaration，表示 `struct sysinfo` 這個 tag 存在。函式參數只保存 pointer，所以這裡不需要知道 struct 的完整欄位。
+
+真正需要宣告變數或讀取欄位的程式，仍要 include `kernel/sysinfo.h`：
+
+```c
+#include "kernel/sysinfo.h"
+#include "user/user.h"
+```
 
 #### 3.3.3 在 `user/usys.pl` 產生 system call stub
 
+```perl
+entry("sysinfo");
+```
+
+`make` 會用 `usys.pl` 產生概念上如下的 assembly：
+
+```asm
+.global sysinfo
+sysinfo:
+  li a7, SYS_sysinfo
+  ecall
+  ret
+```
+
+呼叫 `sysinfo(&info)` 時，RISC-V calling convention 已把第一個參數放入 `a0`；stub 再把 syscall number 放入 `a7`，然後用 `ecall` 進入 kernel。回到 user space 時，`a0` 保存 syscall return value。
+
 #### 3.3.4 在 `kernel/syscall.h` 分配 `SYS_sysinfo`
 
+```c
+#define SYS_sysinfo 23
+```
+
+這個數字必須唯一，並與 user stub 使用的名稱一致。
+
 #### 3.3.5 將 `sys_sysinfo()` 接到 syscall dispatch table
+
+先在 `kernel/syscall.c` 宣告外部函式：
+
+```c
+extern uint64 sys_sysinfo(void);
+```
+
+再加入 function-pointer table：
+
+```c
+[SYS_sysinfo] sys_sysinfo,
+```
+
+因為 trace 功能會把 syscall number 轉換成名稱，也同步加入：
+
+```c
+[SYS_sysinfo] = "sysinfo",
+```
+
+當 `syscall()` 從 trapframe 的 `a7` 取得 `23` 時：
+
+```c
+p->trapframe->a0 = syscalls[num]();
+```
+
+實際效果就是呼叫 `sys_sysinfo()`，並把回傳值寫回 `a0`。
 
 ### 3.4 計算 free memory
 
 #### 閱讀 `kernel/kalloc.c` 的 free list
 
+xv6 的 physical memory allocator 以 linked list 保存所有 free pages：
+
+```c
+struct run {
+  struct run *next;
+};
+
+struct {
+  struct spinlock lock;
+  struct run *freelist;
+} kmem;
+```
+
+每個 free page 的開頭被當成 `struct run` 使用，所以每個 node 就代表一個大小為 `PGSIZE` 的 free physical page：
+
+```text
+kmem.freelist
+      │
+      ▼
+  free page ──> free page ──> free page ──> 0
+```
+
 #### 實作 free page 計數函式
+
+在 `kernel/kalloc.c` 加入：
+
+```c
+uint64
+freemem(void)
+{
+  uint64 npage = 0;
+  struct run *r;
+
+  acquire(&kmem.lock);
+  for(r = kmem.freelist; r != 0; r = r->next)
+    npage++;
+  release(&kmem.lock);
+
+  return npage * PGSIZE;
+}
+```
 
 #### 將 page 數換算成 byte 數
 
+題目要求的是 bytes，而 allocator 的一個 node 代表一個 page。因此最後必須乘上 `PGSIZE`：
+
+```c
+return npage * PGSIZE;
+```
+
+例如目前有 100 個 free pages：
+
+```text
+100 × 4096 = 409600 bytes
+```
+
 #### lock 與 concurrency 注意事項
+
+`kalloc()` 會從 free list 移除 node，`kfree()` 會把 node 放回 free list。兩者都用 `kmem.lock` 保護 linked list。
+
+`freemem()` 必須在整段 traversal 期間持有同一把 lock。若只讀取卻不加鎖，其他 CPU 可能同時改變 `r->next`，導致統計不一致，甚至沿著已改變的 linked list 繼續走訪。
+
+這裡只在計數時持鎖；乘法和 return 不需要保護，所以先 release 再計算結果。
 
 ### 3.5 計算 process 數量
 
 #### 閱讀 `kernel/proc.c` 的 process table
 
+xv6 使用固定大小的陣列保存 process：
+
+```c
+struct proc proc[NPROC];
+```
+
+每個 slot 都有狀態：
+
+```c
+enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+```
+
 #### 計算 state 不等於 `UNUSED` 的 process
 
+在 `kernel/proc.c` 加入：
+
+```c
+uint64
+nproc(void)
+{
+  uint64 count = 0;
+  struct proc *p;
+
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state != UNUSED)
+      count++;
+    release(&p->lock);
+  }
+
+  return count;
+}
+```
+
+迴圈會檢查 `proc[0]` 到 `proc[NPROC - 1]`。`p < &proc[NPROC]` 中的 `&proc[NPROC]` 是陣列結尾後一格，只用於比較，不會 dereference。
+
 #### process lock 注意事項
+
+`kernel/proc.h` 在 `state` 上方明確註明，使用它時必須持有 `p->lock`。process 可能同時由其他 CPU 建立、排程、睡眠、結束或回收，因此不能在沒有鎖的情況下讀取 `state`。
+
+本實作每次只鎖一個 process slot，讀完立即釋放：
+
+```c
+acquire(&p->lock);
+// read p->state
+release(&p->lock);
+```
+
+不需要同時鎖住全部 `NPROC` 個 slots，也不需要額外建立一把全域 process-table lock。
+
+最後在 `kernel/defs.h` 宣告兩個 helper：
+
+```c
+// kalloc.c
+uint64          freemem(void);
+
+// proc.c
+uint64          nproc(void);
+```
+
+這讓 `sysproc.c` 在編譯時知道函式名稱、參數與回傳型別；linker 再把呼叫連到 `kalloc.o` 與 `proc.o` 中的實作。
 
 ### 3.6 實作 `sys_sysinfo()`
 
 #### 使用 `argaddr()` 取得 user virtual address
 
+先讓 `kernel/sysproc.c` 看得到完整 struct 定義：
+
+```c
+#include "sysinfo.h"
+```
+
+handler 的第一步是取得第 0 個 syscall argument：
+
+```c
+uint64 uaddr;
+argaddr(0, &uaddr);
+```
+
+`argaddr(0, ...)` 最終會讀取 trapframe 的 `a0`。它只取出 address 數值，不會在此刻完整驗證 user memory；有效性由稍後的 `copyout()` 檢查。
+
 #### 在 kernel 填入 `struct sysinfo`
+
+```c
+struct sysinfo info;
+
+info.freemem = freemem();
+info.nproc = nproc();
+```
+
+`info` 是真正配置在 kernel stack 上的區域物件。不能改成以下寫法：
+
+```c
+struct sysinfo *info;
+info->freemem = freemem();
+```
+
+上面的 pointer 沒有指向已配置的物件，dereference 會寫入未知位址。另外，`sizeof(info)` 在 pointer 版本只會得到 pointer 大小，而不是 `struct sysinfo` 大小。
 
 #### 使用 `copyout()` 複製到 user space
 
+完整 handler：
+
+```c
+uint64
+sys_sysinfo(void)
+{
+  uint64 uaddr;
+  struct sysinfo info;
+  struct proc *p = myproc();
+
+  argaddr(0, &uaddr);
+  info.freemem = freemem();
+  info.nproc = nproc();
+
+  if(copyout(p->pagetable, uaddr, (char *)&info, sizeof(info)) < 0)
+    return -1;
+
+  return 0;
+}
+```
+
+四個 `copyout()` 參數分別是：
+
+| 參數 | 意義 |
+|---|---|
+| `p->pagetable` | 目前 process 的 user page table |
+| `uaddr` | user space 的目的 virtual address |
+| `(char *)&info` | kernel space 的來源位址 |
+| `sizeof(info)` | 要複製的完整 struct 大小 |
+
+`copyout()` 會依 page table 將 user virtual address 翻譯成 physical address，也會檢查 mapping 與寫入權限。資料若跨越 page boundary，它會分段處理。
+
 #### success 與 error return value
+
+- `copyout()` 成功：`sys_sysinfo()` 回傳 `0`。
+- user pointer 無效、沒有 mapping 或不可寫：`copyout()` 回傳負值，`sys_sysinfo()` 回傳 `-1`。
+
+`syscall()` 會把這個值存進 trapframe 的 `a0`；返回 user mode 後，`sysinfo()` 的 C 呼叫者便取得該回傳值。
 
 ### 3.7 完整執行流程整理
 
 #### user pointer 如何經過 trapframe 傳入 kernel
 
+```text
+sysinfo(&info)
+   │
+   ├── a0 = &info
+   ├── a7 = SYS_sysinfo
+   └── ecall
+          ▼
+      usertrap()
+          ▼
+      syscall()
+          ├── num = trapframe->a7
+          └── syscalls[num]()
+                    ▼
+               sys_sysinfo()
+                    └── argaddr(0) 讀取 trapframe->a0
+```
+
 #### `sys_sysinfo()` 如何蒐集兩項資料
 
+```text
+freemem()
+  lock kmem.lock
+  count kmem.freelist nodes
+  unlock
+  return pages × PGSIZE
+
+nproc()
+  for each proc slot
+    lock p->lock
+    count if state != UNUSED
+    unlock
+```
+
+兩項資訊分別在各自資料結構的 owner module 中計算：memory allocator 的資料留在 `kalloc.c`，process table 的資料留在 `proc.c`。`sysproc.c` 只負責組合結果與 syscall 邊界處理。
+
+`freemem` 與 `nproc` 並非全系統的原子快照，因為兩者分開取得鎖；題目只要求回報呼叫期間觀察到的值，不要求兩個欄位在同一瞬間擷取。
+
 #### `copyout()` 如何跨越 kernel/user address space
+
+```text
+kernel local struct info
+        │ source: &info
+        │
+        │ copyout(p->pagetable, uaddr, ...)
+        ▼
+user virtual address uaddr
+        │
+        ▼
+user local struct info
+```
+
+`argaddr()` 負責取出 address，`copyout()` 才負責依 user page table 安全地寫入。把兩者分開是 xv6 syscall handler 的常見模式。
 
 ### 3.8 測試與結果
 
 #### 編譯與啟動 xv6
 
+先做乾淨建置：
+
+```sh
+make clean
+make qemu
+```
+
+本次完整編譯成功，包含：
+
+```text
+user/_sysinfotest
+```
+
 #### 執行 `sysinfotest`
+
+在 xv6 shell 執行：
+
+```sh
+sysinfotest
+```
 
 #### 檢查 `sysinfotest: OK`
 
+也可以只執行 grader 中的 sysinfo 測試：
+
+```sh
+make grade GRADEFLAGS=sysinfotest
+```
+
+本次實際結果：
+
+```text
+== Test sysinfotest == sysinfotest: OK
+```
+
 #### 執行 `make grade`
+
+完成 `answers-syscall.txt` 與 `time.txt` 後，再執行：
+
+```sh
+make grade
+```
+
+`sysinfotest` 通過只代表 Sysinfo 實作正確；整份 lab 的總分仍包含 GDB answers、trace tests 與 time file。
 
 ### 3.9 遇到的問題與除錯紀錄
 
 #### struct 宣告或編譯問題
 
+`user/user.h` 只需要 forward declaration：
+
+```c
+struct sysinfo;
+int sysinfo(struct sysinfo *);
+```
+
+`kernel/sysproc.c` 要建立真正的 `struct sysinfo info`，因此必須 include 完整定義：
+
+```c
+#include "sysinfo.h"
+```
+
+只宣告 `struct sysinfo *info` 不會配置 struct 本體；未初始化 pointer 不能直接用 `->` 寫欄位。
+
 #### free memory 計算錯誤
+
+常見原因：
+
+- 回傳 free page 數，忘記乘 `PGSIZE`。
+- 沒有取得 `kmem.lock` 就走訪 free list。
+- 在 release lock 之後繼續讀取 `r->next`。
 
 #### process 數量計算錯誤
 
+常見原因：
+
+- 只計算 `RUNNING`，但題目要求所有非 `UNUSED` 狀態。
+- 把 `ZOMBIE` 排除，但 zombie slot 尚未回到 `UNUSED`，所以仍需計入。
+- 沒有持有 `p->lock` 就讀取 `p->state`。
+- child exit 後沒有理解 `wait()` 才會完成回收並讓 slot 回到 `UNUSED`。
+
 #### `copyout()` 失敗或 user address 錯誤
+
+常見原因：
+
+- 把 user address 直接 cast 成 kernel pointer 並 dereference。
+- `copyout()` 的 source 與 destination 寫反。
+- 使用 `sizeof(pointer)`，只複製 8 bytes。
+- 忽略 `copyout()` 的錯誤回傳值，導致無效 user pointer 看似成功。
+- 忘記用目前 process 的 `p->pagetable`。
 
 ### 3.10 Sysinfo 小結
 
 #### 最終修改檔案一覽
 
+| 檔案 | 最終變更 |
+|---|---|
+| `Makefile` | 加入 `$U/_sysinfotest` |
+| `user/user.h` | 宣告 `struct sysinfo` 與 `sysinfo()` |
+| `user/usys.pl` | 加入 `entry("sysinfo")` |
+| `kernel/syscall.h` | 定義 `SYS_sysinfo` |
+| `kernel/syscall.c` | 宣告、dispatch 並命名 `sys_sysinfo` |
+| `kernel/sysproc.c` | 蒐集資料並用 `copyout()` 回傳 struct |
+| `kernel/kalloc.c` | 在 lock 保護下計算 free memory bytes |
+| `kernel/proc.c` | 在每個 process lock 保護下計算 process 數量 |
+| `kernel/defs.h` | 宣告 `freemem()` 與 `nproc()` |
+
 #### 核心觀念整理
+
+1. system call 的 user pointer 只是 user virtual address，kernel 必須透過 `copyin()`／`copyout()` 存取。
+2. `argaddr()` 取出 pointer argument；真正的 address validation 由後續 copy function 完成。
+3. 若要填入一個 struct，應建立真正的 struct 物件，不能只宣告未初始化 pointer。
+4. `sizeof(info)` 是 struct 大小；`sizeof(pointer)` 只是 pointer 大小。
+5. 即使函式只讀取共享資料，若資料可能被其他 CPU 同時修改，仍要遵守原資料結構的 locking discipline。
+6. free-list node 數量乘上 `PGSIZE`，才是題目要求的 free memory bytes。
+7. `nproc` 計算所有 `state != UNUSED` 的 process slots，包含 zombie。
+8. helper function 放在擁有資料的 module，syscall handler 負責組合資料與跨 user/kernel 邊界。

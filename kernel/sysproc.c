@@ -107,15 +107,19 @@ uint64
 sys_sysinfo(void)
 {
   uint64 uaddr;
-  struct sysinfo info;
+  struct sysinfo local_info;
   struct proc *p = myproc();
 
+  // 1. 取得 user 傳入的 address (位於第 0 個參數)
   argaddr(0, &uaddr);
-  info.freemem = freemem();
-  info.nproc = nproc();
 
-  if(copyout(p->pagetable, uaddr, (char *)&info, sizeof(info)) < 0)
-    return -1;
+  // 2. 收集資料填入 Kernel 的 local 變數中
+  local_info.freemem = freemem();
+  local_info.nproc = nproc();
 
-  return 0;
+  // 3. 透過 copyout，利用該 process 的 page table 安全地寫回 user space
+  if(copyout(p->pagetable, uaddr, (char *)&local_info, sizeof(local_info)) < 0)
+    return -1; // 複製失敗或 user 位址無效時回傳 -1
+
+  return 0; // 成功回傳 0
 }

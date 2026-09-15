@@ -15,6 +15,23 @@ struct proc *initproc;
 int nextpid = 1;
 struct spinlock pid_lock;
 
+// Return the number of process slots that are currently in use.
+uint64
+nproc(void)
+{
+  uint64 count = 0;
+  struct proc *p;
+
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state != UNUSED)
+      count++;
+    release(&p->lock);
+  }
+
+  return count;
+}
+
 extern void forkret(void);
 static void freeproc(struct proc *p);
 

@@ -23,6 +23,21 @@ struct {
   struct run *freelist;
 } kmem;
 
+// Return the number of bytes of free physical memory.
+uint64
+freemem(void)
+{
+  uint64 npage = 0;
+  struct run *r;
+
+  acquire(&kmem.lock);
+  for(r = kmem.freelist; r != 0; r = r->next)
+    npage++;
+  release(&kmem.lock);
+
+  return npage * PGSIZE;
+}
+
 void
 kinit()
 {
